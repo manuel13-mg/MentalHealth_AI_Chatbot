@@ -1,686 +1,801 @@
 import streamlit as st
-import cv2
-import numpy as np
-import pandas as pd
-from datetime import datetime
-import json
-import time
-import base64
-from io import BytesIO
-import matplotlib.pyplot as plt
-import seaborn as sns
-from PIL import Image
-import plotly.express as px
-import plotly.graph_objects as go
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import av
-import threading
-import queue
-import speech_recognition as sr
-import pyttsx3
-from textblob import TextBlob
+import groq
 import re
-from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-import torch
-import warnings
-warnings.filterwarnings('ignore')
+import time
+import json
+from datetime import datetime, timedelta
+from transformers import pipeline
+import os
+from typing import Dict, List, Tuple, Optional
 
-# Configure Streamlit page
+# --- Configuration ---
 st.set_page_config(
-    page_title="MindCare AI - Mental Health Support Bot",
-    page_icon="🧠",
+    page_title="MindfulChat Pro",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed",
 )
 
-# Custom CSS for better UI
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        font-weight: bold;
+# --- Enhanced CSS Styling - Black & Blue Theme ---
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
+    .stApp {
+        font-family: 'Inter', sans-serif;
+        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 25%, #16213e 50%, #0f3460 75%, #1e40af 100%);
+        min-height: 100vh;
+    }
+    
+    /* Hide Streamlit elements */
+    .stDeployButton {display: none;}
+    header[data-testid="stHeader"] {display: none;}
+    .stMainBlockContainer {padding-top: 1rem;}
+    
+    /* Main container styling */
+    .main > div {
+        background: rgba(15, 23, 42, 0.95);
+        border-radius: 20px;
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(20px);
+        padding: 20px;
+        margin: 20px;
+    }
+
+    /* Title styling */
+    h1 {
+        font-size: 3rem !important;
+        font-weight: 700 !important;
+        margin-bottom: 8px !important;
+        background: linear-gradient(135deg, #60a5fa, #3b82f6, #1d4ed8) !important;
+        -webkit-background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+        background-clip: text !important;
+        text-align: center !important;
+        letter-spacing: -0.02em !important;
+    }
+
+    /* Subtitle styling */
+    .subtitle {
+        color: #94a3b8;
+        font-size: 1.2rem;
+        font-weight: 400;
         text-align: center;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 2rem;
+        margin-bottom: 30px;
+        opacity: 0.9;
     }
-    
-    .chat-message {
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    
-    .user-message {
-        background-color: #e3f2fd;
-        border-left: 4px solid #2196f3;
-    }
-    
-    .bot-message {
-        background-color: #f3e5f5;
-        border-left: 4px solid #9c27b0;
-    }
-    
-    .emotion-card {
-        padding: 1rem;
-        border-radius: 10px;
-        text-align: center;
-        margin: 0.5rem;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    
+
+    /* Crisis alert styling */
     .crisis-alert {
-        background-color: #ffebee;
-        border: 2px solid #f44336;
-        border-radius: 10px;
-        padding: 1rem;
-        margin: 1rem 0;
+        background: linear-gradient(135deg, #dc2626, #ef4444);
+        color: white;
+        padding: 20px;
+        border-radius: 15px;
+        margin: 20px 0;
+        border: 2px solid #fca5a5;
+        box-shadow: 0 4px 20px rgba(220, 38, 38, 0.4);
     }
-    
-    .supportive-message {
-        background-color: #e8f5e8;
-        border: 2px solid #4caf50;
-        border-radius: 10px;
-        padding: 1rem;
-        margin: 1rem 0;
+
+    /* Resource box styling */
+    .resource-box {
+        background: rgba(34, 197, 94, 0.1);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        border-radius: 15px;
+        padding: 15px;
+        margin: 10px 0;
+        color: #86efac;
     }
-</style>
-""", unsafe_allow_html=True)
 
-# Initialize session state
-if 'conversation_history' not in st.session_state:
-    st.session_state.conversation_history = []
-if 'emotion_history' not in st.session_state:
-    st.session_state.emotion_history = []
-if 'user_profile' not in st.session_state:
-    st.session_state.user_profile = {
-        'name': '',
-        'mood_trend': [],
-        'session_count': 0,
-        'crisis_alerts': 0
+    /* Mood tracker styling */
+    .mood-tracker {
+        background: rgba(59, 130, 246, 0.1);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: 15px;
+        padding: 15px;
+        margin: 10px 0;
     }
-if 'current_emotion' not in st.session_state:
-    st.session_state.current_emotion = 'neutral'
 
-class EmotionAnalyzer:
-    """Emotion analysis from text and facial expressions"""
-    
-    def __init__(self):
-        # Initialize emotion analysis pipeline
-        try:
-            self.emotion_classifier = pipeline(
-                "text-classification",
-                model="j-hartmann/emotion-english-distilroberta-base",
-                device=0 if torch.cuda.is_available() else -1
-            )
-        except:
-            # Fallback to TextBlob for basic sentiment
-            self.emotion_classifier = None
-        
-        # Crisis keywords for detection
-        self.crisis_keywords = [
-            'suicide', 'kill myself', 'end it all', 'hurt myself', 'self harm',
-            'worthless', 'hopeless', 'can\'t go on', 'better off dead'
-        ]
-        
-        # Emotion to color mapping
-        self.emotion_colors = {
-            'joy': '#4CAF50',
-            'sadness': '#2196F3',
-            'anger': '#F44336',
-            'fear': '#FF9800',
-            'surprise': '#9C27B0',
-            'disgust': '#795548',
-            'neutral': '#607D8B'
-        }
-    
-    def analyze_text_emotion(self, text):
-        """Analyze emotion from text"""
-        if not text.strip():
-            return {'emotion': 'neutral', 'confidence': 0.5, 'valence': 0.0}
-        
-        try:
-            if self.emotion_classifier:
-                result = self.emotion_classifier(text)
-                emotion = result[0]['label'].lower()
-                confidence = result[0]['score']
-            else:
-                # Fallback to TextBlob sentiment
-                blob = TextBlob(text)
-                polarity = blob.sentiment.polarity
-                if polarity > 0.1:
-                    emotion = 'joy'
-                elif polarity < -0.1:
-                    emotion = 'sadness'
-                else:
-                    emotion = 'neutral'
-                confidence = min(abs(polarity) + 0.5, 1.0)
-            
-            # Calculate valence
-            blob = TextBlob(text)
-            valence = blob.sentiment.polarity
-            
-            return {
-                'emotion': emotion,
-                'confidence': confidence,
-                'valence': valence
-            }
-        except Exception as e:
-            st.error(f"Error in emotion analysis: {e}")
-            return {'emotion': 'neutral', 'confidence': 0.5, 'valence': 0.0}
-    
-    def detect_crisis(self, text):
-        """Detect potential crisis situations"""
-        text_lower = text.lower()
-        crisis_score = 0
-        
-        for keyword in self.crisis_keywords:
-            if keyword in text_lower:
-                crisis_score += 1
-        
-        # Additional patterns
-        if re.search(r'\b(no\s+point|give\s+up|can\'t\s+take)\b', text_lower):
-            crisis_score += 1
-        
-        return crisis_score > 0, crisis_score
+    /* Chat input styling */
+    .stChatInput > div {
+        background: rgba(30, 41, 59, 0.9) !important;
+        border-radius: 25px !important;
+        border: 2px solid rgba(59, 130, 246, 0.3) !important;
+        box-shadow: 0 4px 20px rgba(59, 130, 246, 0.2) !important;
+    }
 
-class TherapeuticResponseGenerator:
-    """Generate therapeutic and supportive responses"""
-    
-    def __init__(self):
-        self.empathetic_responses = {
-            'sadness': [
-                "I can hear that you're going through a difficult time. Your feelings are completely valid.",
-                "It sounds like you're carrying a heavy burden right now. I'm here to listen and support you.",
-                "I understand you're feeling sad. Remember that it's okay to feel this way, and you're not alone."
-            ],
-            'anger': [
-                "I can sense your frustration. It's natural to feel angry when things aren't going as expected.",
-                "Your anger is telling us something important. Let's explore what might be behind these feelings.",
-                "It's okay to feel angry. Let's work together to understand and process these emotions."
-            ],
-            'fear': [
-                "I understand you're feeling anxious or scared. These feelings can be overwhelming, but you're safe here.",
-                "Fear can be really difficult to deal with. Let's take this one step at a time.",
-                "I hear your concerns. It's brave of you to share these feelings with me."
-            ],
-            'joy': [
-                "I'm glad to hear some positivity in your words! It's wonderful when we can find moments of joy.",
-                "That's great to hear! Celebrating positive moments is important for our wellbeing.",
-                "Your positive energy is coming through. How can we build on this feeling?"
-            ],
-            'neutral': [
-                "I'm here to listen. How are you feeling today?",
-                "Thank you for sharing with me. What's on your mind?",
-                "I appreciate you taking the time to talk. What would you like to explore today?"
-            ]
-        }
-        
-        self.coping_strategies = {
-            'sadness': [
-                "Try some gentle breathing exercises: breathe in for 4 counts, hold for 4, breathe out for 6.",
-                "Consider reaching out to a trusted friend or family member.",
-                "Gentle movement like a short walk can sometimes help lift our mood."
-            ],
-            'anger': [
-                "Try the 5-4-3-2-1 grounding technique: name 5 things you see, 4 you can touch, 3 you hear, 2 you smell, 1 you taste.",
-                "Physical exercise or even tensing and releasing your muscles can help release anger.",
-                "Write down your feelings in a journal - sometimes getting thoughts out helps."
-            ],
-            'fear': [
-                "Practice deep breathing: in through your nose for 4 counts, out through your mouth for 6 counts.",
-                "Try progressive muscle relaxation, starting from your toes and working up.",
-                "Ground yourself by focusing on your immediate surroundings and what you can control."
-            ]
-        }
-    
-    def generate_response(self, user_input, emotion_data, conversation_context):
-        """Generate therapeutic response based on emotion and context"""
-        emotion = emotion_data['emotion']
-        confidence = emotion_data['confidence']
-        
-        # Select appropriate empathetic response
-        if emotion in self.empathetic_responses:
-            empathetic_response = np.random.choice(self.empathetic_responses[emotion])
-        else:
-            empathetic_response = np.random.choice(self.empathetic_responses['neutral'])
-        
-        # Add coping strategy if appropriate
-        coping_strategy = ""
-        if emotion in ['sadness', 'anger', 'fear'] and confidence > 0.6:
-            if emotion in self.coping_strategies:
-                coping_strategy = f"\n\nHere's something that might help: {np.random.choice(self.coping_strategies[emotion])}"
-        
-        # Add session context
-        session_note = ""
-        if len(conversation_context) > 3:
-            session_note = "\n\nI notice we've been talking for a while. How are you feeling about our conversation so far?"
-        
-        return empathetic_response + coping_strategy + session_note
+    .stChatInput input {
+        background: transparent !important;
+        color: #e2e8f0 !important;
+        border: none !important;
+        font-size: 16px !important;
+        font-weight: 500 !important;
+    }
 
-class VoiceSynthesizer:
-    """Voice synthesis with emotional adaptation"""
-    
-    def __init__(self):
-        try:
-            self.tts_engine = pyttsx3.init()
-            self.voices = self.tts_engine.getProperty('voices')
-            if self.voices:
-                self.tts_engine.setProperty('voice', self.voices[1].id if len(self.voices) > 1 else self.voices[0].id)
-        except:
-            self.tts_engine = None
-            st.warning("Text-to-speech not available on this system")
-        
-        self.voice_parameters = {
-            'sadness': {'rate': 150, 'volume': 0.8},
-            'anger': {'rate': 120, 'volume': 0.7},
-            'fear': {'rate': 140, 'volume': 0.9},
-            'joy': {'rate': 180, 'volume': 0.9},
-            'neutral': {'rate': 160, 'volume': 0.8}
-        }
-    
-    def speak(self, text, emotion='neutral'):
-        """Convert text to speech with emotional adaptation"""
-        if not self.tts_engine:
-            return False
-        
-        try:
-            params = self.voice_parameters.get(emotion, self.voice_parameters['neutral'])
-            self.tts_engine.setProperty('rate', params['rate'])
-            self.tts_engine.setProperty('volume', params['volume'])
-            
-            self.tts_engine.say(text)
-            self.tts_engine.runAndWait()
-            return True
-        except Exception as e:
-            st.error(f"Voice synthesis error: {e}")
-            return False
+    .stChatInput input::placeholder {
+        color: #64748b !important;
+    }
 
-# Initialize components
+    /* Chat message styling */
+    .stChatMessage {
+        background: transparent !important;
+        margin: 10px 0 !important;
+    }
+
+    .stChatMessage[data-testid="user-message"] {
+        background: linear-gradient(135deg, #1e40af, #3b82f6, #60a5fa) !important;
+        border-radius: 20px 20px 8px 20px !important;
+        color: white !important;
+        margin-left: 30% !important;
+        box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4) !important;
+    }
+
+    .stChatMessage[data-testid="assistant-message"] {
+        background: linear-gradient(135deg, #1e293b, #334155) !important;
+        border-radius: 20px 20px 20px 8px !important;
+        color: #e2e8f0 !important;
+        margin-right: 25% !important;
+        border: 1px solid rgba(59, 130, 246, 0.2) !important;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3) !important;
+    }
+
+    /* Button styling */
+    .stButton > button {
+        background: linear-gradient(135deg, #1e40af, #3b82f6) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 25px !important;
+        padding: 14px 28px !important;
+        font-size: 16px !important;
+        font-weight: 600 !important;
+        transition: all 0.3s ease !important;
+        box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4) !important;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 8px 25px rgba(59, 130, 246, 0.5) !important;
+        background: linear-gradient(135deg, #1d4ed8, #2563eb) !important;
+    }
+
+    /* Sidebar styling */
+    .stSidebar {
+        background: rgba(15, 23, 42, 0.95) !important;
+    }
+
+    .stSidebar > div {
+        background: rgba(30, 41, 59, 0.95) !important;
+        border-radius: 15px !important;
+        border: 1px solid rgba(59, 130, 246, 0.2) !important;
+        margin: 10px !important;
+        padding: 20px !important;
+    }
+
+    /* Text colors */
+    .stMarkdown, .stText, p, div {
+        color: #e2e8f0 !important;
+    }
+
+    /* Spinner styling */
+    .stSpinner > div {
+        border-top-color: #3b82f6 !important;
+    }
+
+    /* Exercise box styling */
+    .exercise-box {
+        background: rgba(168, 85, 247, 0.1);
+        border: 1px solid rgba(168, 85, 247, 0.3);
+        border-radius: 15px;
+        padding: 15px;
+        margin: 10px 0;
+        color: #c4b5fd;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- Enhanced Models and Initialization ---
 @st.cache_resource
-def load_components():
-    emotion_analyzer = EmotionAnalyzer()
-    response_generator = TherapeuticResponseGenerator()
-    voice_synthesizer = VoiceSynthesizer()
-    return emotion_analyzer, response_generator, voice_synthesizer
+def load_sentiment_model():
+    try:
+        sentiment_pipeline = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
+        return sentiment_pipeline, True
+    except Exception as e:
+        st.error(f"Error initializing sentiment analysis: {e}")
+        return None, False
 
-emotion_analyzer, response_generator, voice_synthesizer = load_components()
+@st.cache_resource
+def initialize_groq_client():
+    try:
+        groq_api_key = os.getenv("GROQ_API_KEY", "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")
+        client = groq.Groq(api_key=groq_api_key)
+        return client, True
+    except Exception as e:
+        st.error(f"Error initializing Groq client: {e}")
+        return None, False
 
-# Main UI
-def main():
-    st.markdown('<h1 class="main-header">🧠 MindCare AI</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="text-align: center; font-size: 1.2rem; color: #666;">Your Personal Mental Health Support Companion</p>', unsafe_allow_html=True)
-    
-    # Sidebar for user profile and settings
-    with st.sidebar:
-        st.header("👤 User Profile")
-        
-        # User information
-        user_name = st.text_input("Your Name", value=st.session_state.user_profile['name'])
-        if user_name != st.session_state.user_profile['name']:
-            st.session_state.user_profile['name'] = user_name
-        
-        st.metric("Sessions Completed", st.session_state.user_profile['session_count'])
-        
-        # Mode selection
-        st.header("🎯 Interaction Mode")
-        mode = st.selectbox("Choose Mode", ["Text Chat", "Voice Chat", "Video Analysis", "Mood Tracking"])
-        
-        # Settings
-        st.header("⚙️ Settings")
-        enable_voice = st.checkbox("Enable Voice Responses", value=True)
-        show_emotion_analysis = st.checkbox("Show Emotion Analysis", value=True)
-        crisis_detection = st.checkbox("Crisis Detection", value=True)
-        
-        # Quick stats
-        if st.session_state.emotion_history:
-            st.header("📊 Quick Stats")
-            recent_emotions = [e['emotion'] for e in st.session_state.emotion_history[-10:]]
-            if recent_emotions:
-                most_common = max(set(recent_emotions), key=recent_emotions.count)
-                st.metric("Recent Dominant Emotion", most_common.title())
-    
-    # Main content area
-    if mode == "Text Chat":
-        text_chat_interface(enable_voice, show_emotion_analysis, crisis_detection)
-    elif mode == "Voice Chat":
-        voice_chat_interface(show_emotion_analysis, crisis_detection)
-    elif mode == "Video Analysis":
-        video_analysis_interface(crisis_detection)
-    elif mode == "Mood Tracking":
-        mood_tracking_interface()
+sentiment_pipeline, sentiment_analysis_available = load_sentiment_model()
+client, model_available = initialize_groq_client()
 
-def text_chat_interface(enable_voice, show_emotion_analysis, crisis_detection):
-    """Text-based chat interface"""
-    st.header("💬 Text Chat")
+# --- Crisis Detection System ---
+def detect_crisis_keywords(text: str) -> Tuple[bool, str]:
+    """Detect crisis-related content in user input."""
+    crisis_patterns = {
+        'suicide': [
+            r'\b(suicide|suicidal|kill myself|end my life|want to die|not worth living)\b',
+            r'\b(end it all|take my own life|better off dead|no point living)\b'
+        ],
+        'self_harm': [
+            r'\b(self harm|hurt myself|cut myself|harm myself)\b',
+            r'\b(cutting|burning myself|self injury)\b'
+        ],
+        'emergency': [
+            r'\b(emergency|crisis|help me|desperate|can\'t go on)\b',
+            r'\b(nobody cares|completely alone|no way out)\b'
+        ]
+    }
     
-    # Display conversation history
-    chat_container = st.container()
+    text_lower = text.lower()
+    for category, patterns in crisis_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, text_lower):
+                return True, category
     
-    with chat_container:
-        for i, message in enumerate(st.session_state.conversation_history):
-            if message['type'] == 'user':
-                st.markdown(f"""
-                <div class="chat-message user-message">
-                    <strong>You:</strong> {message['content']}
-                    <small style="color: #666; float: right;">{message['timestamp']}</small>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div class="chat-message bot-message">
-                    <strong>MindCare AI:</strong> {message['content']}
-                    <small style="color: #666; float: right;">{message['timestamp']}</small>
-                </div>
-                """, unsafe_allow_html=True)
-    
-    # Chat input
-    col1, col2 = st.columns([4, 1])
-    
-    with col1:
-        user_input = st.text_input("Type your message here...", key="chat_input", placeholder="How are you feeling today?")
-    
-    with col2:
-        send_button = st.button("Send", type="primary")
-    
-    if send_button and user_input.strip():
-        process_user_message(user_input, enable_voice, show_emotion_analysis, crisis_detection)
-        st.rerun()
-    
-    # Emotion analysis display
-    if show_emotion_analysis and st.session_state.emotion_history:
-        display_emotion_analysis()
+    return False, None
 
-def process_user_message(user_input, enable_voice, show_emotion_analysis, crisis_detection):
-    """Process user message and generate response"""
-    timestamp = datetime.now().strftime("%H:%M")
-    
-    # Add user message to history
-    st.session_state.conversation_history.append({
-        'type': 'user',
-        'content': user_input,
-        'timestamp': timestamp
-    })
-    
-    # Analyze emotion
-    emotion_data = emotion_analyzer.analyze_text_emotion(user_input)
-    st.session_state.current_emotion = emotion_data['emotion']
-    
-    # Add to emotion history
-    st.session_state.emotion_history.append({
-        'emotion': emotion_data['emotion'],
-        'confidence': emotion_data['confidence'],
-        'valence': emotion_data['valence'],
-        'timestamp': datetime.now(),
-        'text': user_input
-    })
-    
-    # Crisis detection
-    if crisis_detection:
-        is_crisis, crisis_score = emotion_analyzer.detect_crisis(user_input)
-        if is_crisis:
-            st.session_state.user_profile['crisis_alerts'] += 1
-            crisis_response = """
-            I'm concerned about what you've shared. Your life has value and meaning. 
-            Please consider reaching out to a crisis helpline:
-            
-            🆘 **Crisis Resources:**
-            - National Suicide Prevention Lifeline: 988
-            - Crisis Text Line: Text HOME to 741741
-            - International Association for Suicide Prevention: https://www.iasp.info/resources/Crisis_Centres/
-            
-            You don't have to go through this alone. Professional help is available.
-            """
-            
-            st.session_state.conversation_history.append({
-                'type': 'bot',
-                'content': crisis_response,
-                'timestamp': timestamp,
-                'is_crisis': True
-            })
-            return
-    
-    # Generate therapeutic response
-    bot_response = response_generator.generate_response(
-        user_input, 
-        emotion_data, 
-        st.session_state.conversation_history
-    )
-    
-    # Add bot response to history
-    st.session_state.conversation_history.append({
-        'type': 'bot',
-        'content': bot_response,
-        'timestamp': timestamp
-    })
-    
-    # Voice synthesis
-    if enable_voice:
-        voice_synthesizer.speak(bot_response, emotion_data['emotion'])
-    
-    # Update session count
-    st.session_state.user_profile['session_count'] += 1
+def provide_crisis_resources() -> str:
+    """Provide immediate crisis resources."""
+    return """
+🚨 **IMMEDIATE HELP AVAILABLE** 🚨
 
-def display_emotion_analysis():
-    """Display emotion analysis visualization"""
-    st.subheader("🎭 Emotion Analysis")
-    
-    if len(st.session_state.emotion_history) >= 1:
-        # Recent emotion
-        recent_emotion = st.session_state.emotion_history[-1]
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric(
-                "Current Emotion", 
-                recent_emotion['emotion'].title(),
-                f"{recent_emotion['confidence']:.2f} confidence"
-            )
-        
-        with col2:
-            st.metric(
-                "Valence", 
-                f"{recent_emotion['valence']:.2f}",
-                "Positive" if recent_emotion['valence'] > 0 else "Negative"
-            )
-        
-        with col3:
-            st.metric(
-                "Emotional Stability",
-                "Stable" if len(set([e['emotion'] for e in st.session_state.emotion_history[-3:]])) <= 2 else "Variable"
-            )
-        
-        # Emotion timeline
-        if len(st.session_state.emotion_history) > 1:
-            df = pd.DataFrame(st.session_state.emotion_history)
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            
-            fig = px.line(df, x='timestamp', y='valence', 
-                         title='Emotional Valence Over Time',
-                         labels={'valence': 'Emotional Valence', 'timestamp': 'Time'})
-            fig.update_traces(line_color='#667eea')
-            st.plotly_chart(fig, use_container_width=True)
+If you're in immediate danger or having thoughts of suicide, please reach out now:
 
-def voice_chat_interface(show_emotion_analysis, crisis_detection):
-    """Voice chat interface"""
-    st.header("🎤 Voice Chat")
-    st.info("This feature would integrate with speech recognition and real-time audio processing.")
-    
-    # Placeholder for voice chat implementation
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("🎤 Start Recording", type="primary"):
-            st.success("Recording started... (This is a demo placeholder)")
-            # In a real implementation, this would start audio recording
-    
-    with col2:
-        if st.button("⏹️ Stop Recording"):
-            st.info("Recording stopped. Processing speech... (Demo)")
-            # Here you would process the audio and convert to text
-    
-    # Simulated voice input for demo
-    st.subheader("Voice Input Simulation")
-    simulated_speech = st.text_area("Simulate speech input:", placeholder="This would be the transcribed speech...")
-    
-    if st.button("Process Voice Input") and simulated_speech:
-        process_user_message(simulated_speech, True, show_emotion_analysis, crisis_detection)
-        st.rerun()
+**🇺🇸 United States:**
+• National Suicide Prevention Lifeline: **988**
+• Crisis Text Line: Text **HOME** to **741741**
+• Emergency Services: **911**
 
-def video_analysis_interface(crisis_detection):
-    """Video analysis interface with facial emotion recognition"""
-    st.header("📹 Video Analysis")
-    st.info("Real-time facial emotion recognition during video calls")
-    
-    # Video processing would go here
-    st.subheader("Facial Emotion Detection")
-    
-    # Simulated emotion detection results
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Detected Emotions")
-        
-        # Simulated emotion data
-        emotions = ['joy', 'sadness', 'surprise', 'neutral', 'fear']
-        confidences = np.random.rand(5)
-        
-        for emotion, confidence in zip(emotions, confidences):
-            st.progress(confidence, f"{emotion.title()}: {confidence:.2f}")
-    
-    with col2:
-        st.subheader("Facial Landmarks")
-        st.info("Facial landmark detection would be visualized here")
-        
-        # Create a simple emotion radar chart
-        fig = go.Figure()
-        
-        fig.add_trace(go.Scatterpolar(
-            r=confidences,
-            theta=emotions,
-            fill='toself',
-            name='Emotion Intensity'
-        ))
-        
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 1]
-                )),
-            showlegend=False,
-            title="Current Emotional State"
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+**🇬🇧 United Kingdom:**
+• Samaritans: **116 123** (free, 24/7)
+• Crisis Text Line: Text **SHOUT** to **85258**
 
-def mood_tracking_interface():
-    """Mood tracking and analytics interface"""
-    st.header("📊 Mood Tracking & Analytics")
+**🇨🇦 Canada:**
+• Talk Suicide Canada: **1-833-456-4566**
+• Crisis Text Line: Text **TALK** to **686868**
+
+**🌍 International:**
+• International Association for Suicide Prevention: https://www.iasp.info/resources/Crisis_Centres/
+
+**Remember: You are not alone. These feelings can change. Help is available.**
+"""
+
+# --- Enhanced Sentiment Analysis ---
+def analyze_sentiment_advanced(text: str) -> Dict:
+    """Advanced sentiment analysis with emotion detection."""
+    if not sentiment_analysis_available or not sentiment_pipeline:
+        return {'sentiment': 'neutral', 'confidence': 0.5, 'intensity': 'moderate'}
     
-    if not st.session_state.emotion_history:
-        st.info("Start chatting to see your mood analytics!")
+    try:
+        result = sentiment_pipeline(text)[0]
+        label = result['label']
+        score = result['score']
+        
+        # Convert labels and determine intensity
+        if label in ['LABEL_2', 'POSITIVE']:
+            sentiment = 'positive'
+        elif label in ['LABEL_0', 'NEGATIVE']:
+            sentiment = 'negative'
+        else:
+            sentiment = 'neutral'
+        
+        # Determine emotional intensity
+        if score > 0.8:
+            intensity = 'high'
+        elif score > 0.6:
+            intensity = 'moderate'
+        else:
+            intensity = 'low'
+        
+        return {
+            'sentiment': sentiment,
+            'confidence': score,
+            'intensity': intensity
+        }
+    except:
+        return {'sentiment': 'neutral', 'confidence': 0.5, 'intensity': 'moderate'}
+
+# --- Therapeutic Techniques ---
+class TherapeuticTechniques:
+    @staticmethod
+    def breathing_exercise() -> str:
+        return """
+🌬️ **Box Breathing Exercise**
+
+Let's do a simple breathing exercise together:
+
+1. **Inhale** slowly for 4 counts (1... 2... 3... 4...)
+2. **Hold** your breath for 4 counts (1... 2... 3... 4...)
+3. **Exhale** slowly for 4 counts (1... 2... 3... 4...)
+4. **Hold** empty for 4 counts (1... 2... 3... 4...)
+
+Repeat this cycle 4-6 times. Focus only on your breathing.
+"""
+
+    @staticmethod
+    def grounding_exercise() -> str:
+        return """
+🌱 **5-4-3-2-1 Grounding Technique**
+
+This helps bring you back to the present moment:
+
+• **5 things** you can **see** around you
+• **4 things** you can **touch** or feel
+• **3 things** you can **hear**
+• **2 things** you can **smell**
+• **1 thing** you can **taste**
+
+Take your time with each step. This helps calm anxiety and racing thoughts.
+"""
+
+    @staticmethod
+    def positive_affirmations() -> List[str]:
+        return [
+            "I am stronger than my challenges.",
+            "This difficult moment will pass.",
+            "I deserve love and compassion, especially from myself.",
+            "I have overcome difficulties before, and I can do it again.",
+            "My feelings are valid, and it's okay to feel them.",
+            "I am growing and learning with each experience.",
+            "I choose to be patient and kind with myself today."
+        ]
+
+    @staticmethod
+    def coping_strategies(sentiment: str) -> str:
+        strategies = {
+            'negative': """
+💪 **Coping Strategies for Difficult Times:**
+
+• **Reach out** to a trusted friend or family member
+• **Practice deep breathing** or meditation
+• **Go for a walk** or do light exercise
+• **Write down** your thoughts and feelings
+• **Listen to calming music** or nature sounds
+• **Take a warm bath** or shower
+• **Do something creative** - draw, write, or craft
+""",
+            'positive': """
+🌟 **Ways to Maintain Your Positive Energy:**
+
+• **Share your joy** with someone you care about
+• **Practice gratitude** - write down 3 good things today
+• **Engage in activities** you love
+• **Help someone else** - volunteering feels great
+• **Celebrate your wins**, no matter how small
+• **Take time to reflect** on your growth
+• **Plan something** you're excited about
+""",
+            'neutral': """
+🎯 **Self-Care Ideas for Today:**
+
+• **Check in with yourself** - how are you really feeling?
+• **Do one small thing** that brings you joy
+• **Connect with nature** - even just look outside
+• **Practice mindfulness** for 5 minutes
+• **Organize** a small space around you
+• **Learn something new** - watch a tutorial or read
+• **Prepare a healthy meal** or snack mindfully
+"""
+        }
+        return strategies.get(sentiment, strategies['neutral'])
+
+# --- Dynamic Typing Effects ---
+def display_typing_indicator():
+    """Display typing indicator with animated dots."""
+    typing_placeholder = st.empty()
+    typing_html = """
+    <div class="typing-indicator">
+        <span>MindfulChat is thinking</span>
+        <div class="typing-dots">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+        </div>
+    </div>
+    """
+    typing_placeholder.markdown(typing_html, unsafe_allow_html=True)
+    return typing_placeholder
+
+def typewriter_effect(text: str, container, speed: float = 0.03, show_cursor: bool = True):
+    """Create typewriter effect for text display."""
+    if not text:
         return
     
-    # Create DataFrame from emotion history
-    df = pd.DataFrame(st.session_state.emotion_history)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df['date'] = df['timestamp'].dt.date
+    # Clean the text for better display
+    text = text.strip()
     
-    # Mood overview
-    col1, col2, col3, col4 = st.columns(4)
+    # Create placeholder for the typing text
+    text_placeholder = container.empty()
     
-    with col1:
-        st.metric("Total Interactions", len(df))
+    # Type out the text character by character
+    displayed_text = ""
     
-    with col2:
-        avg_valence = df['valence'].mean()
-        st.metric("Average Mood", f"{avg_valence:.2f}", 
-                 "😊" if avg_valence > 0 else "😔")
-    
-    with col3:
-        most_common_emotion = df['emotion'].mode().iloc[0] if not df.empty else 'neutral'
-        st.metric("Dominant Emotion", most_common_emotion.title())
-    
-    with col4:
-        mood_variance = df['valence'].std()
-        stability = "Stable" if mood_variance < 0.3 else "Variable"
-        st.metric("Emotional Stability", stability)
-    
-    # Detailed analytics
-    tab1, tab2, tab3 = st.tabs(["📈 Trends", "🎭 Emotion Distribution", "📅 Daily Patterns"])
-    
-    with tab1:
-        # Mood trend over time
-        fig = px.line(df, x='timestamp', y='valence', 
-                     title='Mood Trend Over Time',
-                     labels={'valence': 'Mood Valence', 'timestamp': 'Time'})
-        fig.add_hline(y=0, line_dash="dash", line_color="gray", 
-                     annotation_text="Neutral Line")
-        st.plotly_chart(fig, use_container_width=True)
+    for i, char in enumerate(text):
+        displayed_text += char
         
-        # Moving average
-        if len(df) > 5:
-            df_sorted = df.sort_values('timestamp')
-            df_sorted['moving_avg'] = df_sorted['valence'].rolling(window=3).mean()
-            
-            fig2 = px.line(df_sorted, x='timestamp', y='moving_avg',
-                          title='3-Point Moving Average of Mood')
-            st.plotly_chart(fig2, use_container_width=True)
+        # Add cursor if enabled
+        cursor_html = '<span class="cursor">|</span>' if show_cursor else ''
+        
+        # Update the display
+        text_placeholder.markdown(
+            f'<div class="typewriter">{displayed_text}{cursor_html}</div>', 
+            unsafe_allow_html=True
+        )
+        
+        # Variable speed based on character type
+        if char in '.!?':
+            time.sleep(speed * 8)  # Longer pause after sentences
+        elif char in ',;:':
+            time.sleep(speed * 4)  # Medium pause after clauses
+        elif char == ' ':
+            time.sleep(speed * 2)  # Short pause after words
+        else:
+            time.sleep(speed)  # Normal character speed
     
-    with tab2:
-        # Emotion distribution
-        emotion_counts = df['emotion'].value_counts()
-        
-        fig = px.pie(values=emotion_counts.values, names=emotion_counts.index,
-                    title='Emotion Distribution')
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Emotion confidence levels
-        fig2 = px.box(df, x='emotion', y='confidence',
-                     title='Emotion Detection Confidence by Type')
-        st.plotly_chart(fig2, use_container_width=True)
-    
-    with tab3:
-        # Daily patterns
-        df['hour'] = df['timestamp'].dt.hour
-        hourly_mood = df.groupby('hour')['valence'].mean().reset_index()
-        
-        fig = px.bar(hourly_mood, x='hour', y='valence',
-                    title='Average Mood by Hour of Day')
-        fig.add_hline(y=0, line_dash="dash", line_color="gray")
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Weekly patterns if enough data
-        if len(df) > 7:
-            df['day_of_week'] = df['timestamp'].dt.day_name()
-            daily_mood = df.groupby('day_of_week')['valence'].mean().reset_index()
-            
-            # Reorder days
-            day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            daily_mood['day_of_week'] = pd.Categorical(daily_mood['day_of_week'], categories=day_order, ordered=True)
-            daily_mood = daily_mood.sort_values('day_of_week')
-            
-            fig2 = px.bar(daily_mood, x='day_of_week', y='valence',
-                         title='Average Mood by Day of Week')
-            fig2.add_hline(y=0, line_dash="dash", line_color="gray")
-            st.plotly_chart(fig2, use_container_width=True)
+    # Final display without cursor
+    if show_cursor:
+        time.sleep(0.5)  # Brief pause before removing cursor
+        text_placeholder.markdown(f'<div class="typewriter">{displayed_text}</div>', unsafe_allow_html=True)
 
-# Footer
-def show_footer():
+def stream_response_with_typing(response_text: str, container):
+    """Stream response with realistic typing patterns."""
+    if not response_text:
+        return
+    
+    # Split into sentences for more natural pauses
+    sentences = re.split(r'(?<=[.!?])\s+', response_text.strip())
+    
+    text_placeholder = container.empty()
+    full_text = ""
+    
+    for i, sentence in enumerate(sentences):
+        if not sentence.strip():
+            continue
+            
+        # Add sentence to full text
+        if i > 0:
+            full_text += " "
+        
+        # Type out each character in the sentence
+        for char in sentence:
+            full_text += char
+            
+            # Show with cursor
+            text_placeholder.markdown(
+                f'<div class="typewriter">{full_text}<span class="cursor">|</span></div>', 
+                unsafe_allow_html=True
+            )
+            
+            # Variable typing speed
+            if char in '.!?':
+                time.sleep(0.15)  # Longer pause after sentences
+            elif char in ',;:':
+                time.sleep(0.08)  # Medium pause after clauses
+            elif char == ' ':
+                time.sleep(0.04)  # Short pause after words
+            elif char in '()"\'':
+                time.sleep(0.02)  # Quick for punctuation
+            else:
+                time.sleep(0.025)  # Normal character speed
+        
+        # Pause between sentences
+        if i < len(sentences) - 1:
+            time.sleep(0.3)
+    
+    # Final display without cursor
+    time.sleep(0.5)
+    text_placeholder.markdown(f'<div class="typewriter">{full_text}</div>', unsafe_allow_html=True)
+
+# --- Enhanced Response Generation ---
+def get_therapeutic_response(user_input: str, sentiment_data: Dict, chat_history: str, crisis_detected: bool = False) -> str:
+    """Generate therapeutic response with crisis handling."""
+    if not model_available or not client:
+        return "I'm experiencing technical difficulties. Please try again or seek immediate help if this is urgent."
+
+    # Handle crisis situations first
+    if crisis_detected:
+        crisis_response = """I'm really concerned about you right now, and I want you to know that your life has value and meaning. What you're experiencing is incredibly difficult, but you don't have to face it alone.
+
+Please consider reaching out for immediate support - there are people trained to help who are available 24/7. Your feelings are valid, but there are ways to work through this pain.
+
+*"The darkest nights produce the brightest stars." - John Green*"""
+        return crisis_response
+
+    try:
+        sentiment = sentiment_data['sentiment']
+        confidence = sentiment_data['confidence']
+        intensity = sentiment_data['intensity']
+
+        # Create contextual prompt based on sentiment and intensity
+        therapeutic_context = f"""
+You are MindfulChat Pro, an advanced AI therapist combining empathy with evidence-based therapeutic techniques.
+
+User Input: "{user_input}"
+Emotional State: {sentiment} ({intensity} intensity, {confidence:.1f} confidence)
+Recent Context: {chat_history[-300:] if chat_history else 'New conversation'}
+
+Response Guidelines:
+1. Show genuine empathy and validation
+2. Use therapeutic techniques (CBT, mindfulness, solution-focused)
+3. Ask one thoughtful follow-up question
+4. Include practical coping strategies if appropriate
+5. End with an inspirational quote or affirmation
+6. Keep response conversational yet professional (3-4 sentences)
+7. Focus on the user's strengths and resilience
+
+Therapeutic Approach:
+- For negative emotions: Validate, normalize, provide coping strategies
+- For positive emotions: Celebrate, reinforce, encourage gratitude
+- For neutral states: Gently explore, encourage self-reflection
+"""
+
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": therapeutic_context}],
+            model="llama3-8b-8192",
+            max_tokens=300,
+            temperature=0.7,
+            top_p=0.9,
+            stream=False
+        )
+
+        response = chat_completion.choices[0].message.content.strip()
+        return response
+
+    except Exception as e:
+        return f"I'm having some technical difficulties right now. In the meantime, remember that whatever you're going through, you're not alone. Please try again in a moment, or reach out to someone you trust."
+
+# --- Mood Tracking ---
+def initialize_mood_tracking():
+    """Initialize mood tracking in session state."""
+    if "mood_history" not in st.session_state:
+        st.session_state.mood_history = []
+    if "daily_checkin" not in st.session_state:
+        st.session_state.daily_checkin = {}
+
+def log_mood(sentiment_data: Dict):
+    """Log mood data for tracking."""
+    mood_entry = {
+        'timestamp': datetime.now().isoformat(),
+        'sentiment': sentiment_data['sentiment'],
+        'confidence': sentiment_data['confidence'],
+        'intensity': sentiment_data['intensity']
+    }
+    st.session_state.mood_history.append(mood_entry)
+    
+    # Keep only last 30 days
+    cutoff_date = datetime.now() - timedelta(days=30)
+    st.session_state.mood_history = [
+        entry for entry in st.session_state.mood_history
+        if datetime.fromisoformat(entry['timestamp']) > cutoff_date
+    ]
+
+def get_mood_insights() -> str:
+    """Provide insights based on mood history."""
+    if not st.session_state.mood_history:
+        return "Start chatting to track your mood patterns over time."
+    
+    recent_moods = st.session_state.mood_history[-7:]  # Last 7 entries
+    positive_count = sum(1 for mood in recent_moods if mood['sentiment'] == 'positive')
+    negative_count = sum(1 for mood in recent_moods if mood['sentiment'] == 'negative')
+    
+    if positive_count > negative_count:
+        return f"📈 You've been experiencing more positive emotions lately ({positive_count}/{len(recent_moods)} recent interactions). Keep nurturing what's working!"
+    elif negative_count > positive_count:
+        return f"📊 You've been going through some challenges ({negative_count}/{len(recent_moods)} recent interactions). Remember, it's okay to have difficult days."
+    else:
+        return f"⚖️ Your emotions have been balanced lately. This shows emotional stability and resilience."
+
+# --- Main Application ---
+def main():
+    # Header
+    st.markdown("""
+    # MindfulChat Pro
+    
+    <div class="subtitle">Your advanced AI companion for mental wellness and emotional support</div>
+    """, unsafe_allow_html=True)
+
+    # Initialize systems
+    initialize_mood_tracking()
+
+    # Initialize session state
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+        welcome_msg = """Welcome to MindfulChat Pro! I'm here to provide compassionate support and evidence-based therapeutic techniques to help you navigate life's challenges.
+
+Whether you're dealing with stress, anxiety, relationship issues, or just need someone to talk to, I'm here to listen without judgment and offer practical guidance.
+
+**How I can help:**
+• Emotional support and validation
+• Coping strategies and techniques
+• Mindfulness and breathing exercises
+• Crisis resources when needed
+• Mood tracking and insights
+
+*"You are braver than you believe, stronger than you seem, and smarter than you think." - A.A. Milne*"""
+        st.session_state.messages.append({"role": "assistant", "content": welcome_msg})
+
+    # Display mood insights in sidebar
+    with st.sidebar:
+        st.markdown("### 📊 Mood Insights")
+        mood_insight = get_mood_insights()
+        st.markdown(f'<div class="mood-tracker">{mood_insight}</div>', unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        st.markdown("### 🧘‍♀️ Quick Exercises")
+        techniques = TherapeuticTechniques()
+        
+        if st.button("🌬️ Breathing Exercise"):
+            # Add typing effect for exercises
+            with st.chat_message("assistant"):
+                typing_placeholder = display_typing_indicator()
+                time.sleep(1.5)
+                typing_placeholder.empty()
+                
+                exercise = techniques.breathing_exercise()
+                exercise_container = st.empty()
+                stream_response_with_typing(exercise, exercise_container)
+                
+            st.session_state.messages.append({"role": "assistant", "content": exercise})
+            st.rerun()
+        
+        if st.button("🌱 Grounding Exercise"):
+            # Add typing effect for exercises
+            with st.chat_message("assistant"):
+                typing_placeholder = display_typing_indicator()
+                time.sleep(1.5)
+                typing_placeholder.empty()
+                
+                exercise = techniques.grounding_exercise()
+                exercise_container = st.empty()
+                stream_response_with_typing(exercise, exercise_container)
+                
+            st.session_state.messages.append({"role": "assistant", "content": exercise})
+            st.rerun()
+        
+        if st.button("💭 Daily Affirmation"):
+            # Add typing effect for affirmations
+            with st.chat_message("assistant"):
+                typing_placeholder = display_typing_indicator()
+                time.sleep(1)
+                typing_placeholder.empty()
+                
+                import random
+                affirmation = random.choice(techniques.positive_affirmations())
+                affirmation_msg = f"🌟 **Today's Affirmation:**\n\n*{affirmation}*\n\nTake a moment to really let this sink in. You deserve these kind words."
+                
+                affirmation_container = st.empty()
+                stream_response_with_typing(affirmation_msg, affirmation_container)
+                
+            st.session_state.messages.append({"role": "assistant", "content": affirmation_msg})
+            st.rerun()
+
+        st.markdown("---")
+        
+        st.markdown("""
+        ### About MindfulChat Pro
+        
+        **Enhanced Features:**
+        - 🧠 Advanced sentiment analysis
+        - ❤️ Evidence-based therapeutic responses
+        - 🔍 Crisis detection and resources
+        - 📊 Mood tracking and insights
+        - 🧘‍♀️ Guided exercises and techniques
+        - 💬 Personalized coping strategies
+        - 🔒 Safe, judgment-free space
+        
+        **Therapeutic Approaches:**
+        - Cognitive Behavioral Therapy (CBT)
+        - Mindfulness-Based Stress Reduction
+        - Solution-Focused Brief Therapy
+        - Positive Psychology techniques
+        
+        **Important:** This AI provides support but is not a replacement for professional mental health care. In crisis situations, please contact emergency services or a mental health professional.
+        """)
+        
+        st.markdown("---")
+        
+        if st.button("🗑️ Clear Chat History", key="clear_chat"):
+            st.session_state.messages = []
+            st.rerun()
+
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Chat input
+    if prompt := st.chat_input("Share what's on your mind... I'm here to listen and support you."):
+        # Detect crisis
+        crisis_detected, crisis_type = detect_crisis_keywords(prompt)
+        
+        # Add user message
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Analyze sentiment
+        sentiment_data = analyze_sentiment_advanced(prompt)
+        log_mood(sentiment_data)
+
+        # Generate chat history
+        chat_history = "\n".join([
+            f"{msg['role']}: {msg['content'][:150]}..." if len(msg['content']) > 150 else f"{msg['role']}: {msg['content']}"
+            for msg in st.session_state.messages[-5:-1]
+        ])
+
+        # Generate response with dynamic typing
+        with st.chat_message("assistant"):
+            # Show typing indicator
+            typing_placeholder = display_typing_indicator()
+            
+            if crisis_detected:
+                # Show crisis resources immediately (no typing effect for urgent info)
+                typing_placeholder.empty()
+                crisis_resources = provide_crisis_resources()
+                st.markdown(f'<div class="crisis-alert">{crisis_resources}</div>', unsafe_allow_html=True)
+                
+                # Brief pause before main response
+                time.sleep(1)
+                typing_placeholder = display_typing_indicator()
+            
+            # Generate the response
+            response = get_therapeutic_response(prompt, sentiment_data, chat_history, crisis_detected)
+            
+            # Clear typing indicator and show response with typewriter effect
+            typing_placeholder.empty()
+            
+            # Create container for the response
+            response_container = st.empty()
+            
+            # Apply typewriter effect
+            stream_response_with_typing(response, response_container)
+            
+            # Add coping strategies with typing effect
+            if sentiment_data['sentiment'] in ['negative'] and sentiment_data['intensity'] in ['moderate', 'high']:
+                time.sleep(0.5)  # Brief pause before additional resources
+                
+                # Show typing indicator for additional resources
+                typing_placeholder_2 = display_typing_indicator()
+                time.sleep(1.5)  # Simulate thinking time
+                typing_placeholder_2.empty()
+                
+                techniques = TherapeuticTechniques()
+                coping = techniques.coping_strategies(sentiment_data['sentiment'])
+                
+                # Type out coping strategies
+                coping_container = st.empty()
+                coping_container.markdown(f'<div class="resource-box">{coping}</div>', unsafe_allow_html=True)
+                
+                # Add a small typing effect for the resource box
+                time.sleep(0.3)
+
+        # Add assistant response to history
+        full_response = response
+        if crisis_detected:
+            full_response = f"{provide_crisis_resources()}\n\n{response}"
+        
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+    # Footer
     st.markdown("---")
     st.markdown("""
-    <div style="text-align: center; color: #666; padding: 2rem;">
-        <p><strong>🧠 MindCare AI</strong> - Your Mental Health Support Companion</p>
-        <p>⚠️ <em>This is an AI assistant and not a replacement for professional mental health care.</em></p>
-        <p>If you're experiencing a mental health crisis, please contact emergency services or a crisis helpline immediately.</p>
-        <p>Made with ❤️ using Streamlit & Transformers</p>
+    <div style="text-align: center; color: #94a3b8; font-size: 14px; padding: 20px;">
+        🤝 Built with care using advanced AI • 🔒 Your conversations are private • 💙 Remember, seeking help is a sign of strength
+        <br><br>
+        <strong>Emergency Resources:</strong> US: 988 | UK: 116 123 | CA: 1-833-456-4566
     </div>
     """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
-    show_footer()
