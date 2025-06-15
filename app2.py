@@ -333,7 +333,7 @@ if 'mood_tracker' not in st.session_state:
 
 # --- Groq API Configuration ---
 try:
-    client = Groq(api_key="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")
+    client = Groq(api_key="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")
 except Exception as e:
     st.error(f"Failed to initialize Groq client. Please check your API key. Error: {e}")
     st.stop()
