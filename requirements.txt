@@ -1,3 +1,4 @@
 streamlit
 groq
 pyttsx3
+gtts
