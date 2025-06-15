@@ -1,4 +1,0 @@
-# This is your Groq API key.
-# The key name "GROQ_API_KEY" must match what the Python script expects (st.secrets["GROQ_API_KEY"]).
-
-GROQ_API_KEY = "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"
