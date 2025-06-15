@@ -261,9 +261,6 @@ class ImprovedTTSManager:
             self.tts_engine = pyttsx3.init()
             if self.tts_engine:
                 self.is_initialized = True
-                print("TTS Engine Initialized Successfully.")
-            else:
-                st.error("Failed to get a TTS engine instance.")
         except Exception as e:
             st.error(f"Failed to initialize TTS engine: {e}")
             self.is_initialized = False
@@ -287,20 +284,16 @@ class ImprovedTTSManager:
             return
             
         def speak_worker(text_to_speak):
-            print("TTS THREAD: Started.")
             try:
                 self.is_speaking = True
                 clean_text = self.clean_text_for_speech(text_to_speak)
                 if clean_text:
-                    print(f"TTS THREAD: Attempting to say: '{clean_text[:60]}...'")
                     self.tts_engine.say(clean_text)
                     self.tts_engine.runAndWait()
-                    print("TTS THREAD: runAndWait() finished.")
             except Exception as e:
                 print(f"TTS THREAD ERROR: {e}")
             finally:
                 self.is_speaking = False
-                print("TTS THREAD: Finished.")
 
         self.current_thread = threading.Thread(target=speak_worker, args=(text,), daemon=True)
         self.current_thread.start()
@@ -331,12 +324,20 @@ if 'crisis_detector' not in st.session_state:
 if 'mood_tracker' not in st.session_state:
     st.session_state.mood_tracker = MoodTracker()
 
-# --- Groq API Configuration ---
+# --- Groq API Configuration (Now using st.secrets) ---
 try:
-    client = Groq(api_key="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")
+    # Check if the secret is available in the secrets.toml file
+    if "GROQ_API_KEY" not in st.secrets or not st.secrets["GROQ_API_KEY"]:
+        st.error("Groq API key not found. Please add it to your .streamlit/secrets.toml file.")
+        st.stop()
+    
+    # Initialize the Groq client with the key from the secrets file
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+
 except Exception as e:
-    st.error(f"Failed to initialize Groq client. Please check your API key. Error: {e}")
+    st.error(f"Failed to initialize Groq client. Please check your .streamlit/secrets.toml file. Error: {e}")
     st.stop()
+
 
 GROQ_MODELS = { "llama3-8b-8192": "Llama 3 8B", "llama3-70b-8192": "Llama 3 70B", "mixtral-8x7b-32768": "Mixtral 8x7B", "gemma2-9b-it": "Gemma 2 9B"}
 
@@ -483,7 +484,3 @@ if prompt := st.chat_input("How are you feeling today?"):
         except Exception as e:
             st.error(f"An error occurred with the AI response: {e}")
             traceback.print_exc()
-
-    # CRITICAL FIX: Do NOT call st.rerun() here. 
-    # Streamlit will automatically rerun the script because we have updated st.session_state.messages
-    # Calling it manually will kill the TTS thread before it can finish speaking.
