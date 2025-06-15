@@ -20,41 +20,48 @@ st.markdown("""
     body { font-family: 'Inter', sans-serif; }
     .stApp { background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%); min-height: 100vh; }
     /* Paste the rest of your beautiful CSS here */
-    h1 { color: white; } .subtitle { color: #94a3b8; }
+    h1 { color: white; text-align: center; } .subtitle { color: #94a3b8; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# --- NEW: Cloud-Based TTS Manager using gTTS ---
+# --- UPDATED: Cloud-Based TTS Manager using gTTS ---
 class GTTSManager:
     def __init__(self):
-        self.is_initialized = True # gTTS doesn't need complex initialization
+        self.is_initialized = True
 
     def clean_text_for_speech(self, text):
         clean_text = re.sub(r'[\*#`]', '', text)
         clean_text = re.sub(r'http[s]?://\S+', '', clean_text)
         clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-        return clean_text[:500] # gTTS can be slow with very long text
+        
+        # --- THE FIX IS HERE ---
+        # Increased the character limit from 500 to 3000.
+        # Also added a warning if the text is still too long.
+        if len(clean_text) > 3000:
+            st.warning("Response is very long and has been truncated for audio output.", icon="⚠️")
+            return clean_text[:3000]
+        
+        return clean_text
 
     def speak_text_in_browser(self, text, lang='en', slow=False):
         if not self.is_initialized or not text.strip():
             return
+        
+        st.toast("Generating voice output...", icon="💬")
+        
         try:
             clean_text = self.clean_text_for_speech(text)
             
             # Create the gTTS object
             tts = gTTS(text=clean_text, lang=lang, slow=slow)
             
-            # Create an in-memory binary file
+            # Use an in-memory binary file
             fp = io.BytesIO()
-            
-            # Write the audio data to the in-memory file
             tts.write_to_fp(fp)
-            
-            # Rewind the file to the beginning
             fp.seek(0)
             
-            # Play the audio in the user's browser using st.audio
+            # Play the audio in the browser
             st.audio(fp, format="audio/mp3", autoplay=True)
 
         except Exception as e:
@@ -82,7 +89,6 @@ try:
     
     groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     
-    # Initialize the NEW GTTSManager
     if 'tts_manager' not in st.session_state:
         st.session_state.tts_manager = GTTSManager()
 
@@ -91,15 +97,12 @@ except Exception as e:
     st.stop()
 
 # --- Session State Initialization ---
+GROQ_MODELS = { "llama3-8b-8192": "Llama 3 8B", "llama3-70b-8192": "Llama 3 70B", "mixtral-8x7b-32768": "Mixtral 8x7B", "gemma2-9b-it": "Gemma 2 9B"}
 if "app_settings" not in st.session_state:
     st.session_state.app_settings = {
         "model": "llama3-8b-8192", "temperature": 0.7, "max_tokens": 1024,
-        # Updated TTS settings for gTTS
-        "tts_enabled": True,
-        "tts_lang": 'en', 
-        "tts_slow": False,
-        "auto_speak": True,
-        "mood_tracking": True, "crisis_detection": True,
+        "tts_enabled": True, "tts_lang": 'en', "tts_slow": False,
+        "auto_speak": True, "mood_tracking": True, "crisis_detection": True,
         "system_prompt": "You are InnerCompass, a kind AI companion..."
     }
 if "messages" not in st.session_state: st.session_state.messages = []
@@ -110,32 +113,30 @@ if "mood_history" not in st.session_state: st.session_state.mood_history = []
 # --- Sidebar UI (Updated for gTTS) ---
 with st.sidebar:
     st.title("🎛️ Settings")
-    # AI Model and Features sections remain the same
     st.subheader("🤖 AI Model")
-    # ... your model selectbox and temperature slider
+    selected_model_key = st.selectbox("Choose Model:", options=list(GROQ_MODELS.keys()), format_func=lambda x: GROQ_MODELS[x], index=list(GROQ_MODELS.keys()).index(st.session_state.app_settings["model"]))
+    st.session_state.app_settings["model"] = selected_model_key
+    st.session_state.app_settings["temperature"] = st.slider("Creativity (Temperature):", 0.1, 1.5, st.session_state.app_settings["temperature"], 0.1)
 
     st.subheader("🚀 Features")
-    # ... your feature checkboxes
+    st.session_state.app_settings["mood_tracking"] = st.checkbox("Enable Mood Tracking", value=st.session_state.app_settings["mood_tracking"])
+    st.session_state.app_settings["crisis_detection"] = st.checkbox("Enable Crisis Detection", value=st.session_state.app_settings["crisis_detection"])
 
     st.subheader("🔊 Text-to-Speech (Google)")
     st.session_state.app_settings["tts_enabled"] = st.checkbox("Enable Voice Output", value=st.session_state.app_settings["tts_enabled"])
     if st.session_state.app_settings["tts_enabled"]:
         st.session_state.app_settings["auto_speak"] = st.checkbox("Auto-speak responses", value=st.session_state.app_settings["auto_speak"])
-        
-        # gTTS specific options
         st.session_state.app_settings["tts_lang"] = st.selectbox(
-            "Language:",
-            options=['en', 'fr', 'es', 'de', 'it', 'ja', 'ko'],
-            help="Language for the voice output."
+            "Language:", options=['en', 'en-uk', 'en-us', 'en-au', 'fr', 'es', 'de'], help="Language for the voice output."
         )
         st.session_state.app_settings["tts_slow"] = st.checkbox(
-            "Slow Speed", 
-            value=st.session_state.app_settings["tts_slow"]
+            "Slow Speed", value=st.session_state.app_settings["tts_slow"]
         )
 
 # --- Main App Logic ---
 st.title("InnerCompass 🌟")
 st.markdown('<p class="subtitle">Your empathetic AI companion for thoughts and feelings.</p>', unsafe_allow_html=True)
+
 # ... Your dashboard columns and buttons remain the same
 
 for message in st.session_state.messages:
@@ -150,10 +151,10 @@ if prompt := st.chat_input("How are you feeling today?"):
     # --- Crisis detection logic here ---
     
     try:
-        # --- Groq API Call ---
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             with st.spinner("InnerCompass is thinking..."):
+                # Your existing Groq streaming logic
                 stream = groq_client.chat.completions.create(
                     model=st.session_state.app_settings["model"],
                     messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
@@ -161,18 +162,13 @@ if prompt := st.chat_input("How are you feeling today?"):
                     max_tokens=st.session_state.app_settings["max_tokens"],
                     stream=True,
                 )
-                full_response = ""
-                for chunk in stream:
-                    if content := chunk.choices[0].delta.content:
-                        full_response += content
-                        message_placeholder.markdown(full_response + "▌")
+                full_response = "".join(chunk.choices[0].delta.content for chunk in stream if chunk.choices[0].delta.content)
                 message_placeholder.markdown(full_response)
         
         st.session_state.messages.append({"role": "assistant", "content": full_response})
         
-        # --- FINAL STEP: Call the GTTS Manager ---
-        if st.session_state.app_settings["tts_enabled"] and st.session_state.app_settings["auto_speak"]:
-            st.toast("Generating voice output...", icon="💬")
+        # Call the GTTS Manager AFTER the full response is ready
+        if st.session_state.app_settings["tts_enabled"] and st.session_state.app_settings["auto_speak"] and full_response:
             st.session_state.tts_manager.speak_text_in_browser(
                 full_response,
                 lang=st.session_state.app_settings["tts_lang"],
